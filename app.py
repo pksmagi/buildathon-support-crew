@@ -2,29 +2,57 @@ import streamlit as st
 import os
 from datetime import datetime
 from crewai import Agent, Task, Crew, Process
-from crewai_tools import SerperDevTool
+from crewai_tools import SerperDevTool, tool
 
-# Initialize session state for storing results
-if "assistant_answer" not in st.session_state:
-    st.session_state.assistant_answer = None
-if "web_search_answer" not in st.session_state:
-    st.session_state.web_search_answer = None
-if "file_saved" not in st.session_state:
-    st.session_state.file_saved = False
+
+# Custom tool for file saving
+@tool
+def save_to_file(query: str, assistant_answer: str, web_answer: str) -> str:
+    """Save query and both answers to a text file."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    content = f"""=====================================
+CUSTOMER SUPPORT RECORD
+=====================================
+
+TIMESTAMP: {timestamp}
+---
+
+CUSTOMER QUERY:
+{query}
+
+---
+
+ASSISTANT ANSWER (From Knowledge):
+{assistant_answer}
+
+---
+
+WEB SEARCH ANSWER (Current Information):
+{web_answer}
+
+---
+[End of Record]
+=====================================
+"""
+    with open("answers.txt", "w") as f:
+        f.write(content)
+    return f"Successfully saved record to answers.txt at {timestamp}"
+
 
 # Set up the Streamlit page
 st.set_page_config(page_title="Customer Support Crew", layout="wide")
 st.title("🤖 Customer Support System - CrewAI Powered")
 st.markdown("---")
 
-# Display instructions
+# Display how it works
 with st.expander("ℹ️ How it works", expanded=False):
     st.markdown("""
-    1. **Assistant Agent**: Answers your query directly from its knowledge
-    2. **Web Search Agent**: Searches the web and provides additional information
-    3. **Entry Agent**: Saves both answers and your query to a text file
+    **Sequential Process:**
+    1. **Assistant Agent** answers directly from knowledge (specialized in general support)
+    2. **Web Search Agent** searches current web info (specialized in real-time data)
+    3. **Entry Agent** documents and saves the interaction
     
-    All three agents work sequentially to provide comprehensive support.
+    Each agent builds on previous results in true sequential order.
     """)
 
 # Create input form
@@ -38,114 +66,105 @@ with st.form("query_form"):
 
 if submitted and user_query:
     st.markdown("---")
-    st.info("⏳ Processing your query through the support crew...")
+    st.info("⏳ Processing your query through the crew sequentially...")
     
     # Initialize tools
     search_tool = SerperDevTool()
     
-    # Create Agent 1: Assistant
+    # Agent 1: Knowledge-based assistant (NO web search capability)
     assistant_agent = Agent(
-        role="Customer Support Assistant",
-        goal="Answer the user's customer support query directly based on your knowledge",
-        backstory="""You are an experienced customer support representative who answers 
-        customer queries directly with your expertise. Provide clear, concise, and helpful 
-        answers based on your knowledge base.""",
+        role="Knowledge-Based Support Assistant",
+        goal="Provide accurate answers to support queries using your training knowledge only",
+        backstory="You are a support specialist with deep knowledge of common issues. Answer queries directly without searching.",
         verbose=False,
-        allow_delegation=False
+        allow_delegation=False,
+        tools=[]  # No tools - knowledge only
     )
     
-    # Create Agent 2: Web Search Assistant
+    # Agent 2: Web research specialist (WITH search tool)
     web_search_agent = Agent(
-        role="Web Search Specialist",
-        goal="Search the web to find current information about the customer's query and provide an answer",
-        backstory="""You are an expert at searching the web and finding relevant information. 
-        You use search tools to find the most up-to-date and relevant information to answer 
-        customer queries. Always cite sources where appropriate.""",
-        tools=[search_tool],
+        role="Web Research Specialist",
+        goal="Find current, up-to-date information from the web to supplement support",
+        backstory="You specialize in finding the most current web information using search tools.",
         verbose=False,
-        allow_delegation=False
+        allow_delegation=False,
+        tools=[search_tool]  # Only web search tool
     )
     
-    # Create Agent 3: Entry Agent
+    # Agent 3: Documentation specialist (WITH file saving tool)
     entry_agent = Agent(
-        role="Data Entry Specialist",
-        goal="Save the customer query and both answers to a text file for record-keeping",
-        backstory="""You are responsible for documenting all customer support interactions. 
-        You write comprehensive records of queries and responses to files for future reference 
-        and quality assurance.""",
+        role="Documentation Specialist",
+        goal="Create comprehensive support records by combining all answers",
+        backstory="You format and save complete support interactions for record-keeping.",
         verbose=False,
-        allow_delegation=False
+        allow_delegation=False,
+        tools=[save_to_file]  # Only file saving tool
     )
     
-    # Create Tasks in sequence
+    # Task 1: Get knowledge-based answer
     task_1 = Task(
-        description=f"Answer this customer support query directly from your knowledge: {user_query}",
+        description=f"Answer this support query using your knowledge: '{user_query}'",
         agent=assistant_agent,
-        expected_output="A clear and helpful answer to the customer's query"
+        expected_output="A clear, helpful answer based on your knowledge"
     )
     
+    # Task 2: Get web-based answer (depends on Task 1 completion)
     task_2 = Task(
-        description=f"Search the web and provide information about: {user_query}. Provide a comprehensive answer based on current web sources.",
+        description=f"""Search the web for current information about: '{user_query}'
+        Provide an answer that complements the knowledge-based answer.""",
         agent=web_search_agent,
-        expected_output="A detailed answer based on web search results"
+        expected_output="A detailed answer based on current web sources"
     )
     
+    # Task 3: Save both answers (depends on Task 1 and Task 2)
     task_3 = Task(
-        description=f"""Save the following information to a file named 'answers.txt':
-        - Customer Query: {user_query}
-        - Assistant Answer: {{task_1_output}}
-        - Web Search Answer: {{task_2_output}}
+        description=f"""Document this support interaction by:
+        1. Using the original query: {user_query}
+        2. Including the knowledge-based answer from Task 1
+        3. Including the web-based answer from Task 2
+        4. Saving everything to file using the save_to_file tool
         
-        Format it nicely and include the timestamp. Return confirmation that the file was saved.""",
+        Call save_to_file with query, assistant_answer (from task 1), and web_answer (from task 2).""",
         agent=entry_agent,
-        expected_output="Confirmation that the file has been saved with all information"
+        expected_output="Confirmation that the support record was saved"
     )
     
-    # Create the crew with sequential process
+    # Create crew with true sequential processing
     crew = Crew(
         agents=[assistant_agent, web_search_agent, entry_agent],
         tasks=[task_1, task_2, task_3],
-        process=Process.sequential,
+        process=Process.sequential,  # Ensures strict sequential execution
         verbose=False
     )
     
-    # Execute the crew
-    with st.spinner("🔄 Agents are working on your query..."):
+    # Execute crew
+    with st.spinner("🔄 Agents processing sequentially..."):
         try:
             result = crew.kickoff()
             
-            # Parse results from the crew output
-            # The result contains the final output from all tasks
-            final_output = str(result)
-            
-            # Display results
+            # Display success
             st.success("✅ Query processed successfully!")
             st.markdown("---")
             
-            # Create columns for better layout
+            # Show query details
             col1, col2 = st.columns(2)
-            
             with col1:
-                st.subheader("📝 Your Query")
+                st.subheader("📝 Query")
                 st.write(user_query)
-            
             with col2:
-                st.subheader("⏰ Timestamp")
+                st.subheader("⏰ Processed At")
                 st.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
             
             st.markdown("---")
-            
-            # Display the final output
             st.subheader("🤖 Agent Responses")
-            st.write(final_output)
+            st.write(result)
             
+            # Offer file download
             st.markdown("---")
-            st.success("💾 All responses have been saved to answers.txt")
-            
-            # Provide download option
             if os.path.exists("answers.txt"):
                 with open("answers.txt", "r") as f:
                     file_content = f.read()
+                st.success("💾 Record saved to answers.txt")
                 st.download_button(
                     label="📥 Download answers.txt",
                     data=file_content,
@@ -154,17 +173,12 @@ if submitted and user_query:
                 )
         
         except Exception as e:
-            st.error(f"❌ An error occurred: {str(e)}")
-            st.info("Make sure your API keys are set in environment variables:")
-            st.code("OPENAI_API_KEY and SERPER_API_KEY")
+            st.error(f"❌ Error: {str(e)}")
+            st.info("Ensure API keys are set: OPENAI_API_KEY and SERPER_API_KEY")
 
 elif submitted and not user_query:
-    st.warning("⚠️ Please enter a query before submitting!")
+    st.warning("⚠️ Please enter a query!")
 
 # Footer
 st.markdown("---")
-st.markdown("""
-<div style='text-align: center'>
-    <small>Customer Support System powered by CrewAI & Streamlit | Weekly Buildathon</small>
-</div>
-""", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center'><small>Customer Support System | CrewAI + Streamlit</small></div>", unsafe_allow_html=True)
