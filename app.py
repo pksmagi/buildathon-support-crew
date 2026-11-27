@@ -8,35 +8,42 @@ from crewai_tools import SerperDevTool, tool
 # Custom tool for file saving
 @tool
 def save_to_file(query: str, assistant_answer: str, web_answer: str) -> str:
-    """Save query and both answers to a text file."""
+    """Save query and both answers to a text file. Use this tool to document support interactions.
+    
+    Args:
+        query: The original customer query
+        assistant_answer: Answer from knowledge-based assistant
+        web_answer: Answer from web research
+    
+    Returns:
+        Confirmation message with file path and timestamp
+    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     content = f"""=====================================
 CUSTOMER SUPPORT RECORD
 =====================================
 
 TIMESTAMP: {timestamp}
----
 
 CUSTOMER QUERY:
 {query}
 
 ---
 
-ASSISTANT ANSWER (From Knowledge):
+KNOWLEDGE-BASED ANSWER:
 {assistant_answer}
 
 ---
 
-WEB SEARCH ANSWER (Current Information):
+WEB RESEARCH ANSWER:
 {web_answer}
 
----
-[End of Record]
 =====================================
 """
-    with open("answers.txt", "w") as f:
+    filepath = "answers.txt"
+    with open(filepath, "w") as f:
         f.write(content)
-    return f"Successfully saved record to answers.txt at {timestamp}"
+    return f"Record saved to {filepath} at {timestamp}"
 
 
 # Set up the Streamlit page
@@ -47,12 +54,12 @@ st.markdown("---")
 # Display how it works
 with st.expander("ℹ️ How it works", expanded=False):
     st.markdown("""
-    **Sequential Process:**
-    1. **Assistant Agent** answers directly from knowledge (specialized in general support)
-    2. **Web Search Agent** searches current web info (specialized in real-time data)
-    3. **Entry Agent** documents and saves the interaction
+    **True Sequential Process:**
+    1. **Task 1**: Knowledge Agent answers from training data
+    2. **Task 2**: Web Agent searches web (receives Task 1 output)
+    3. **Task 3**: Documentation Agent saves both (receives Task 1 + Task 2 outputs)
     
-    Each agent builds on previous results in true sequential order.
+    Each task builds on previous results through proper context passing.
     """)
 
 # Create input form
@@ -72,30 +79,30 @@ if submitted and user_query:
     search_tool = SerperDevTool()
     
     # Agent 1: Knowledge-based assistant (NO web search capability)
-    assistant_agent = Agent(
-        role="Knowledge-Based Support Assistant",
-        goal="Provide accurate answers to support queries using your training knowledge only",
-        backstory="You are a support specialist with deep knowledge of common issues. Answer queries directly without searching.",
+    knowledge_agent = Agent(
+        role="Knowledge-Based Support Specialist",
+        goal="Answer support queries using your training knowledge without external tools",
+        backstory="You are a support expert with deep knowledge. Answer directly from what you know.",
         verbose=False,
         allow_delegation=False,
         tools=[]  # No tools - knowledge only
     )
     
     # Agent 2: Web research specialist (WITH search tool)
-    web_search_agent = Agent(
+    web_agent = Agent(
         role="Web Research Specialist",
-        goal="Find current, up-to-date information from the web to supplement support",
-        backstory="You specialize in finding the most current web information using search tools.",
+        goal="Search the web for current information related to the support query",
+        backstory="You find up-to-date web information using search tools.",
         verbose=False,
         allow_delegation=False,
         tools=[search_tool]  # Only web search tool
     )
     
     # Agent 3: Documentation specialist (WITH file saving tool)
-    entry_agent = Agent(
+    documentation_agent = Agent(
         role="Documentation Specialist",
-        goal="Create comprehensive support records by combining all answers",
-        backstory="You format and save complete support interactions for record-keeping.",
+        goal="Create and save support records using the provided information",
+        backstory="You format and save support interactions properly.",
         verbose=False,
         allow_delegation=False,
         tools=[save_to_file]  # Only file saving tool
@@ -103,50 +110,55 @@ if submitted and user_query:
     
     # Task 1: Get knowledge-based answer
     task_1 = Task(
-        description=f"Answer this support query using your knowledge: '{user_query}'",
-        agent=assistant_agent,
-        expected_output="A clear, helpful answer based on your knowledge"
-    )
-    
-    # Task 2: Get web-based answer (depends on Task 1 completion)
-    task_2 = Task(
-        description=f"""Search the web for current information about: '{user_query}'
-        Provide an answer that complements the knowledge-based answer.""",
-        agent=web_search_agent,
-        expected_output="A detailed answer based on current web sources"
-    )
-    
-    # Task 3: Save both answers (depends on Task 1 and Task 2)
-    task_3 = Task(
-        description=f"""Document this support interaction by:
-        1. Using the original query: {user_query}
-        2. Including the knowledge-based answer from Task 1
-        3. Including the web-based answer from Task 2
-        4. Saving everything to file using the save_to_file tool
+        description=f"""Answer this support query using only your knowledge: '{user_query}'
         
-        Call save_to_file with query, assistant_answer (from task 1), and web_answer (from task 2).""",
-        agent=entry_agent,
-        expected_output="Confirmation that the support record was saved"
+        Provide a clear, helpful answer based on what you know.""",
+        agent=knowledge_agent,
+        expected_output="A clear support answer from your knowledge base"
     )
     
-    # Create crew with true sequential processing
+    # Task 2: Web search (explicitly receives Task 1 output)
+    task_2 = Task(
+        description=f"""You will receive the knowledge-based answer from the previous task.
+        Now search the web for current information about: '{user_query}'
+        
+        Provide a web-based answer that complements the knowledge answer.
+        This answer will be used along with the previous answer in the final record.""",
+        agent=web_agent,
+        expected_output="A detailed web-based answer with current information"
+    )
+    
+    # Task 3: Document both answers (explicitly uses Task 1 and Task 2 outputs)
+    task_3 = Task(
+        description=f"""You will receive outputs from both previous tasks.
+        Use the save_to_file tool to create a support record with:
+        
+        Original query: {user_query}
+        Knowledge answer: (from Task 1)
+        Web answer: (from Task 2)
+        
+        Call the save_to_file tool with all three pieces of information.""",
+        agent=documentation_agent,
+        expected_output="Confirmation that the support record was saved successfully"
+    )
+    
+    # Create crew with sequential process
     crew = Crew(
-        agents=[assistant_agent, web_search_agent, entry_agent],
+        agents=[knowledge_agent, web_agent, documentation_agent],
         tasks=[task_1, task_2, task_3],
         process=Process.sequential,  # Ensures strict sequential execution
         verbose=False
     )
     
-    # Execute crew
+    # Execute
     with st.spinner("🔄 Agents processing sequentially..."):
         try:
             result = crew.kickoff()
             
-            # Display success
             st.success("✅ Query processed successfully!")
             st.markdown("---")
             
-            # Show query details
+            # Display query and timestamp
             col1, col2 = st.columns(2)
             with col1:
                 st.subheader("📝 Query")
@@ -159,12 +171,12 @@ if submitted and user_query:
             st.subheader("🤖 Agent Responses")
             st.write(result)
             
-            # Offer file download
+            # File download
             st.markdown("---")
             if os.path.exists("answers.txt"):
                 with open("answers.txt", "r") as f:
                     file_content = f.read()
-                st.success("💾 Record saved to answers.txt")
+                st.success("💾 Support record saved to answers.txt")
                 st.download_button(
                     label="📥 Download answers.txt",
                     data=file_content,
